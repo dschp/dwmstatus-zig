@@ -22,12 +22,7 @@ pub const IDLE_TIME_LIMIT: u64 = 25 * 60;
 pub const CONNECTION_ALIVE_TIME_LIMIT: u16 = 200;
 pub const MAX_READ_SIZE: usize = 1024 * 100;
 
-//pub const stdout = std.io.getStdOut().writer();
 const L = @import("lib.zig");
-
-//pub fn print(comptime format: []const u8, args: anytype) void {
-//stdout.print(format, args) catch unreachable;
-//}
 
 pub fn log(a: *const Account, comptime format: []const u8, args: anytype) void {
     L.print((INDENT ** 2) ++ "[{s}] ", .{a.name});
