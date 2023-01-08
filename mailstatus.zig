@@ -89,6 +89,7 @@ pub fn main() !void {
         if (pfds_changed) {
             pfds_len = buildPfds(clients, pfds, pfds_map);
             pfds_changed = false;
+            status_changed = true;
         }
 
         if (poll != 0) {
