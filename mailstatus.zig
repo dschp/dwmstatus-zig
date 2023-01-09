@@ -62,14 +62,12 @@ pub fn main() !void {
 
     const pfds = try allocator.alloc(C.struct_pollfd, accounts.len);
     defer allocator.free(pfds);
-    const pfds_map = try allocator.alloc(?*Client, accounts.len);
-    defer allocator.free(pfds_map);
+    buildPfds(pfds, clients);
 
-    var pfds_len: usize = 0;
     var pfds_changed = true;
     const poll_timeout: c_int = 1000;
     while (true) {
-        const poll = C.poll(@ptrCast([*c]C.struct_pollfd, pfds), pfds_len, poll_timeout);
+        const poll = C.poll(@ptrCast([*c]C.struct_pollfd, pfds), clients.len, poll_timeout);
         if (poll < 0) {
             L.print(M.INDENT ++ "poll() failed: {}\n", .{poll});
             return error.PollError1;
@@ -81,19 +79,19 @@ pub fn main() !void {
             const len = L.formatLogTimestamp(&buf);
             L.print("{s} | poll() => {}\n", .{ buf[0..len], poll });
 
-            try processPfds(pfds[0..pfds_len], pfds_map, &status_changed, &pfds_changed);
+            try processPfds(pfds, clients, &status_changed, &pfds_changed);
         } else {
             checkConnections(clients, &pfds_changed);
         }
 
         if (pfds_changed) {
-            pfds_len = buildPfds(clients, pfds, pfds_map);
+            buildPfds(pfds, clients);
             pfds_changed = false;
             status_changed = true;
         }
 
         if (poll != 0) {
-            printPfds(pfds[0..pfds_len], pfds_map);
+            printPfds(pfds, clients);
         }
 
         if (status_changed) {
@@ -126,47 +124,41 @@ fn checkConnections(clients: []Client, pfds_changed: *bool) void {
     }
 }
 
-fn buildPfds(clients: []Client, pfds: []C.struct_pollfd, pfds_map: []?*Client) usize {
+fn buildPfds(pfds: []C.struct_pollfd, clients: []Client) void {
     var buf: [30]u8 = undefined;
     const len = L.formatLogTimestamp(&buf);
 
     L.print("{s} | Preparing for poll()...\n", .{buf[0..len]});
 
-    var i: usize = 0;
-    for (clients) |*c| {
+    for (clients) |*c, i| {
         var events: c_short = 0;
         switch (c.socket.phase) {
             .Connecting => events = C.POLLOUT,
             .TlsStarted => events = C.POLLIN,
             else => {},
         }
-        if (events == 0) continue;
 
-        pfds[i].fd = c.socket.sock.?;
+        pfds[i].fd = if (events == 0) -1 else c.socket.sock.?;
         pfds[i].events = events | @intCast(c_short, C.POLLHUP);
-        pfds_map[i] = c;
-
-        i += 1;
     }
-
-    return i;
 }
 
-fn printPfds(pfds: []C.struct_pollfd, pfds_map: []?*Client) void {
+fn printPfds(pfds: []C.struct_pollfd, clients: []Client) void {
     for (pfds) |*p, i| {
-        const c = pfds_map[i].?;
+        if (p.fd < 0) continue;
+        const c = &clients[i];
         const args = .{ i, p.fd, p.events, c.a.name, c.connectCount, c.socket.phase };
         L.print(M.INDENT ++ "pollfd: [{}] ({}, {}) {s} #{} @{}\n", args);
     }
 }
 
-fn processPfds(pfds: []C.struct_pollfd, pfds_map: []?*Client, status_changed: *bool, pfds_changed: *bool) !void {
+fn processPfds(pfds: []C.struct_pollfd, clients: []Client, status_changed: *bool, pfds_changed: *bool) !void {
     for (pfds) |*p, i| {
         if (p.revents & (C.POLLERR | C.POLLNVAL) != 0) {
             return error.PollError;
         }
 
-        const c = pfds_map[i].?;
+        const c = &clients[i];
         const a = c.a;
 
         if (p.revents & C.POLLHUP != 0) {
