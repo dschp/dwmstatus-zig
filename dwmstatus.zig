@@ -14,24 +14,39 @@ pub fn main() !void {
     };
     const win = getRootWindow(dpy);
 
-    const allocator = std.heap.c_allocator;
+    const buf_size = 1000;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-    try L.printArgs(args);
+    var buffer_args: [buf_size]u8 = undefined;
+    var fba_args = std.heap.FixedBufferAllocator.init(&buffer_args);
+    const alloc_args = fba_args.allocator();
+    const args = try std.process.argsAlloc(alloc_args);
+    defer std.process.argsFree(alloc_args, args);
 
-    if (args.len < 2) {
-        return error.StatusFileNotSpecified;
+    var buffer_files: [buf_size]u8 = undefined;
+    var fba_files = std.heap.FixedBufferAllocator.init(&buffer_files);
+    const alloc_files = fba_files.allocator();
+    var files = std.ArrayList(std.fs.File).init(alloc_files);
+    defer {
+        for (files.items) |f| {
+            f.close();
+        }
+        files.deinit();
     }
 
-    const status = try std.fs.createFileAbsolute(args[1], .{ .read = true });
-    defer status.close();
+    if (args.len > 1) {
+        for (args[1..]) |a, i| {
+            L.print("{}: {s}\n", .{ i, a });
+            try files.append(try std.fs.createFileAbsolute(a, .{ .read = true }));
+        }
+    }
 
-    var buffer: [512]u8 = undefined;
+    var buffer: [buf_size]u8 = undefined;
     while (true) {
-        try status.seekTo(0);
-        var idx = try status.readAll(buffer[0..256]);
-        //L.print("{}: {s}\n", .{ idx, buffer[0..idx] });
+        var idx: usize = 0;
+        for (files.items) |f| {
+            try f.seekTo(0);
+            idx += try f.readAll(buffer[idx..]);
+        }
 
         idx += try L.formatTime(buffer[idx..]);
         buffer[idx] = '\x00';
