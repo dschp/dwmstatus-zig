@@ -62,80 +62,54 @@ pub fn main() !void {
 
     const pfds = try allocator.alloc(C.struct_pollfd, accounts.len);
     defer allocator.free(pfds);
-    buildPfds(pfds, clients);
 
-    var pfds_changed = true;
     const poll_timeout: c_int = 1000;
     while (true) {
+        preparePfds(pfds, clients);
+
         const poll = C.poll(@ptrCast([*c]C.struct_pollfd, pfds), clients.len, poll_timeout);
         if (poll < 0) {
             L.print(M.INDENT ++ "poll() failed: {}\n", .{poll});
             return error.PollError1;
-        }
-
-        var status_changed = false;
-        if (poll > 0) {
+        } else if (poll > 0) {
             var buf: [30]u8 = undefined;
             const len = L.formatLogTimestamp(&buf);
             L.print("{s} | poll() => {}\n", .{ buf[0..len], poll });
 
-            try processPfds(pfds, clients, &status_changed, &pfds_changed);
-        } else {
-            checkConnections(clients, &pfds_changed);
-        }
-
-        if (pfds_changed) {
-            buildPfds(pfds, clients);
-            pfds_changed = false;
-            status_changed = true;
-        }
-
-        if (poll != 0) {
+            var status_changed = false;
+            try processPfds(pfds, clients, &status_changed);
             printPfds(pfds, clients);
-        }
 
-        if (status_changed) {
-            var buffer: [256]u8 = undefined;
-            var idx = try M.formatMailStatus(&buffer, clients);
+            if (status_changed) {
+                const output = try std.fs.createFileAbsolute(args[1], .{ .truncate = true });
+                defer output.close();
 
-            const output = try std.fs.createFileAbsolute(args[1], .{ .truncate = true });
-            defer output.close();
+                var buffer: [256]u8 = undefined;
+                var idx = try M.formatMailStatus(&buffer, clients);
 
-            try output.writeAll(buffer[0..idx]);
-        }
-    }
-}
-
-fn checkConnections(clients: []Client, pfds_changed: *bool) void {
-    for (clients) |*c| {
-        switch (c.socket.phase) {
-            .Disconnected => {
-                if (c.connect()) pfds_changed.* = true;
-            },
-            .TlsStarted => {
-                c.checkInactivity() catch |e| {
-                    M.log(c.a, "checkInactivity: {}", .{e});
-                    c.disconnect();
-                    pfds_changed.* = true;
-                };
-            },
-            else => {},
+                try output.writeAll(buffer[0..idx]);
+            }
         }
     }
 }
 
-fn buildPfds(pfds: []C.struct_pollfd, clients: []Client) void {
-    var buf: [30]u8 = undefined;
-    const len = L.formatLogTimestamp(&buf);
-
-    L.print("{s} | Preparing for poll()...\n", .{buf[0..len]});
-
+fn preparePfds(pfds: []C.struct_pollfd, clients: []Client) void {
     for (clients) |*c, i| {
         var events: c_short = 0;
         switch (c.socket.phase) {
-            .Connecting => events = C.POLLOUT,
-            .TlsStarted => events = C.POLLIN,
-            else => {},
+            .Disconnected => {
+                c.connect();
+            },
+            .Connecting => {
+                events = C.POLLOUT;
+            },
+            .TlsStarted => {
+                events = C.POLLIN;
+                c.checkInactivity() catch |e| {
+                    M.log(c.a, "checkInactivity: {}", .{e});
+                    c.disconnect();
+                };
+            },
         }
 
         pfds[i].fd = if (events == 0) -1 else c.socket.sock.?;
@@ -152,7 +126,7 @@ fn printPfds(pfds: []C.struct_pollfd, clients: []Client) void {
     }
 }
 
-fn processPfds(pfds: []C.struct_pollfd, clients: []Client, status_changed: *bool, pfds_changed: *bool) !void {
+fn processPfds(pfds: []C.struct_pollfd, clients: []Client, status_changed: *bool) !void {
     for (pfds) |*p, i| {
         if (p.revents & (C.POLLERR | C.POLLNVAL) != 0) {
             return error.PollError;
@@ -164,7 +138,6 @@ fn processPfds(pfds: []C.struct_pollfd, clients: []Client, status_changed: *bool
         if (p.revents & C.POLLHUP != 0) {
             M.log(a, "revents = POLLHUP", .{});
             c.disconnect();
-            pfds_changed.* = true;
             continue;
         }
 
@@ -176,7 +149,6 @@ fn processPfds(pfds: []C.struct_pollfd, clients: []Client, status_changed: *bool
                     M.log(a, "connectReady error: {}", .{e});
                     c.disconnect();
                 };
-                pfds_changed.* = true;
             },
             .TlsStarted => {
                 if (p.revents & C.POLLIN == 0) continue;
@@ -188,7 +160,6 @@ fn processPfds(pfds: []C.struct_pollfd, clients: []Client, status_changed: *bool
                 c.readReady() catch |e| {
                     M.log(a, "readReady error: {}", .{e});
                     c.disconnect();
-                    pfds_changed.* = true;
                 };
                 if (c.unseensChanged) status_changed.* = true;
             },
@@ -233,7 +204,7 @@ const Client = struct {
         c.needle = "";
     }
 
-    fn connect(c: *Client) bool {
+    fn connect(c: *Client) void {
         if (c.connectCount > 0) {
             const elapsed = @divFloor(c.timer1.read(), 1_000_000_000);
             const logTime = @divFloor(c.timer2.read(), 1_000_000_000);
@@ -242,7 +213,7 @@ const Client = struct {
                     M.log(c.a, "Reconnect Timer: {d} sec", .{elapsed});
                     c.timer2.reset();
                 }
-                return false;
+                return;
             }
         }
 
@@ -251,10 +222,7 @@ const Client = struct {
             M.log(c.a, "connect error: {}", .{e});
             c.timer1.reset();
             c.timer2.reset();
-            return false;
         };
-
-        return true;
     }
 
     fn connectReady(c: *Client) !void {
