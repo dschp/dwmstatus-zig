@@ -66,12 +66,12 @@ pub fn formatMailStatus(buf: []u8, clients: anytype) !usize {
     for (clients) |c| {
         const cnt = c.unseens.count();
         if (cnt > 0) {
-            const s = try fmt.bufPrint(buf[idx..], " ({s}: {d})", .{ c.a.name, cnt });
+            const s = try fmt.bufPrint(buf[idx..], "({s}: {d}) ", .{ c.a.name, cnt });
             idx += s.len;
         }
     }
     if (idx > 0) {
-        const s = try fmt.bufPrint(buf[idx..], " |", .{});
+        const s = try fmt.bufPrint(buf[idx..], "| ", .{});
         idx += s.len;
     }
     return idx;
